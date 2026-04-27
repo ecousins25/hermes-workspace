@@ -72,6 +72,9 @@ export function TerminalPanel({ isMobile }: TerminalPanelProps) {
   const searchMap = useRef(new Map<string, SearchAddon>())
   const logBufferRef = useRef(new Map<string, string>())
   const logSaveTimers = useRef(new Map<string, number>())
+  // Mirror activeTabId in a ref so the long-lived SSE reader closure can
+  // check the current value without forcing the whole effect to re-run.
+  const activeTabIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     window.localStorage.setItem(PANEL_OPEN_KEY, String(isOpen))
@@ -87,6 +90,7 @@ export function TerminalPanel({ isMobile }: TerminalPanelProps) {
   }, [tabs])
 
   useEffect(() => {
+    activeTabIdRef.current = activeTabId
     if (activeTabId) {
       window.localStorage.setItem(ACTIVE_TAB_KEY, activeTabId)
     }
@@ -280,6 +284,24 @@ export function TerminalPanel({ isMobile }: TerminalPanelProps) {
             )
             continue
           }
+          if (currentEvent === 'exit' || currentEvent === 'close') {
+            // Server reported the PTY is gone. Clear the tab's sessionId so
+            // any subsequent /api/terminal-input or /api/terminal-resize
+            // calls don't fire against a dead session and 404. (#80)
+            const exitInfo =
+              currentEvent === 'exit' && typeof payload === 'object'
+                ? ` (exit code ${payload?.code ?? '?'}${payload?.signal ? `, signal ${payload.signal}` : ''})`
+                : ''
+            terminal.writeln(`\r\n\x1b[2m[session ended${exitInfo}]\x1b[0m`)
+            terminal.writeln(`\x1b[2m[click + to open a new tab, or reload to retry]\x1b[0m`)
+            setTabs((prev) =>
+              prev.map((tab) =>
+                tab.id === tabId ? { ...tab, sessionId: undefined } : tab,
+              ),
+            )
+            sessionId = undefined
+            continue
+          }
           if (currentEvent === 'data') {
             const textChunk =
               payload?.data ??
@@ -288,6 +310,13 @@ export function TerminalPanel({ isMobile }: TerminalPanelProps) {
               payload?.output
             if (typeof textChunk === 'string') {
               terminal.write(textChunk)
+              // Restore keyboard focus after stream writes — some browsers
+              // (Chrome, Edge) yank DOM focus back to the page after the
+              // SSE reader resolves, which leaves xterm unable to receive
+              // keystrokes until the user reloads. (#136)
+              if (tabId === activeTabIdRef.current) {
+                terminal.focus()
+              }
               const currentLog = logBufferRef.current.get(tabId) ?? ''
               const nextLog = `${currentLog}${textChunk}`
               logBufferRef.current.set(tabId, nextLog)
@@ -389,6 +418,11 @@ export function TerminalPanel({ isMobile }: TerminalPanelProps) {
                         : 'border-primary-200 text-primary-700',
                     )}
                     onClick={() => setActiveTabId(tab.id)}
+                    // Suppress the browser native context menu on tab
+                    // headers — we don't ship a custom one yet and the
+                    // default actions don't work on a <button> with no
+                    // editable content. (#136)
+                    onContextMenu={(event) => event.preventDefault()}
                   >
                     {tab.title}
                     {tabs.length > 1 ? (
@@ -495,6 +529,15 @@ function TerminalView({
         'h-full w-full bg-[#0b0f1a] text-primary-100',
         isActive ? 'block' : 'hidden',
       )}
+      // Clicking the container should always restore xterm focus — the
+      // textarea xterm uses for input is buried inside .xterm-helper-textarea
+      // and the click handler is the most reliable signal. (#136)
+      onClick={() => {
+        const textarea = containerRef.current?.querySelector<HTMLTextAreaElement>(
+          '.xterm-helper-textarea',
+        )
+        textarea?.focus()
+      }}
       onKeyDown={(event) => {
         if (event.key === 'c' && (event.metaKey || event.ctrlKey)) {
           document.execCommand('copy')

@@ -49,6 +49,7 @@ import { SEARCH_MODAL_EVENTS, useSearchModal } from '@/hooks/use-search-modal'
 import {
   selectChatProfileAvatarDataUrl,
   selectChatProfileDisplayName,
+  selectSidebarHoverExpand,
   useChatSettingsStore,
 } from '@/hooks/use-chat-settings'
 import { StatusDot } from '@/components/status-indicator'
@@ -609,6 +610,7 @@ function ChatSidebarComponent({
   const [providersOpen, setProvidersOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
   const [isHoverExpanded, setIsHoverExpanded] = useState(false)
+  const sidebarHoverExpand = useChatSettingsStore(selectSidebarHoverExpand)
   const sidebarRef = useRef<HTMLElement | null>(null)
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null)
 
@@ -664,16 +666,18 @@ function ChatSidebarComponent({
   }, [])
 
   useEffect(() => {
-    if (isMobile || !isCollapsed) {
+    if (isMobile || !isCollapsed || !sidebarHoverExpand) {
       setIsHoverExpanded(false)
     }
-  }, [isCollapsed, isMobile])
+  }, [isCollapsed, isMobile, sidebarHoverExpand])
 
-  const isVisuallyCollapsed = isCollapsed && !isHoverExpanded
-  const isHoverPreviewExpanded = !isMobile && isCollapsed && isHoverExpanded
-
+  const isHoverPreviewExpanded =
+    sidebarHoverExpand && !isMobile && isCollapsed && isHoverExpanded
+  const isVisuallyCollapsed = isCollapsed && !isHoverPreviewExpanded
 
   function handleSidebarToggle() {
+    // In hover-preview mode, a click should dismiss the preview first;
+    // otherwise toggle the persistent collapsed state.
     if (isHoverPreviewExpanded) {
       setIsHoverExpanded(false)
       return
@@ -854,10 +858,12 @@ function ChatSidebarComponent({
       data-tour="sidebar-container"
       style={isMobile ? { maxWidth: 360 } : undefined}
       onMouseEnter={() => {
-        if (!isMobile && isCollapsed) setIsHoverExpanded(true)
+        if (sidebarHoverExpand && !isMobile && isCollapsed) {
+          setIsHoverExpanded(true)
+        }
       }}
       onMouseLeave={() => {
-        if (!isMobile) setIsHoverExpanded(false)
+        if (sidebarHoverExpand && !isMobile) setIsHoverExpanded(false)
       }}
       aria-hidden={isMobile && isCollapsed ? true : undefined}
       {...(isMobile && isCollapsed ? { inert: true } : {})}

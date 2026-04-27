@@ -14,6 +14,9 @@ export type LoaderStyle =
   | 'logo'
 export const DEFAULT_CHAT_DISPLAY_NAME = 'User'
 
+export type EnterBehavior = 'send' | 'newline'
+export type ChatWidth = 'comfortable' | 'wide' | 'full'
+
 export type ChatSettings = {
   showToolMessages: boolean
   showReasoningBlocks: boolean
@@ -21,6 +24,35 @@ export type ChatSettings = {
   loaderStyle: LoaderStyle
   displayName: string
   avatarDataUrl: string | null
+  /**
+   * Controls how Enter behaves in the chat composer.
+   *  - 'send'    — Enter sends, Shift+Enter / Cmd+Enter inserts a newline (default)
+   *  - 'newline' — Enter inserts a newline, Cmd+Enter / Ctrl+Enter sends
+   */
+  enterBehavior: EnterBehavior
+  /**
+   * Max-width of the chat content column (#89).
+   *  - 'comfortable' — 900px (default, keeps prior layout)
+   *  - 'wide'        — 1200px
+   *  - 'full'        — 100% of the pane (edge-to-edge)
+   * Implemented via the --chat-content-max-width CSS variable switched by
+   * the `data-chat-width` attribute on <html>.
+   */
+  chatWidth: ChatWidth
+  /**
+   * When the chat sidebar is collapsed to the 48px rail, should hovering
+   * the rail temporarily expand it? Follow-up to #91 — some users liked the
+   * previous hover-preview behavior.
+   *  - false (default) — rail stays 48px, icons directly clickable
+   *  - true            — rail expands on hover, re-collapses on leave
+   */
+  sidebarHoverExpand: boolean
+  /**
+   * Play a short notification sound in the browser when the agent finishes
+   * responding in the main chat. Off by default so existing users don't get
+   * surprised by sound on next page load.
+   */
+  soundOnChatComplete: boolean
 }
 
 type ChatSettingsState = {
@@ -36,6 +68,10 @@ function defaultChatSettings(): ChatSettings {
     loaderStyle: 'dots',
     displayName: DEFAULT_CHAT_DISPLAY_NAME,
     avatarDataUrl: null,
+    enterBehavior: 'send',
+    chatWidth: 'comfortable',
+    sidebarHoverExpand: false,
+    soundOnChatComplete: false,
   }
 }
 
@@ -98,6 +134,30 @@ export function selectChatProfileAvatarDataUrl(
   state: ChatSettingsState,
 ): string | null {
   return state.settings.avatarDataUrl
+}
+
+export function selectEnterBehavior(state: ChatSettingsState): EnterBehavior {
+  return state.settings.enterBehavior
+}
+
+export function selectChatWidth(state: ChatSettingsState): ChatWidth {
+  return state.settings.chatWidth
+}
+
+export function selectSidebarHoverExpand(state: ChatSettingsState): boolean {
+  return state.settings.sidebarHoverExpand
+}
+
+/**
+ * Hook: keep <html data-chat-width='...'> in sync with the current setting.
+ * Call once in the app root so CSS vars react to the pref.
+ */
+export function useApplyChatWidth(): void {
+  const chatWidth = useChatSettingsStore(selectChatWidth)
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    document.documentElement.setAttribute('data-chat-width', chatWidth)
+  }, [chatWidth])
 }
 
 export function useChatSettings() {

@@ -2,6 +2,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
+  Link01Icon,
   MessageMultiple01Icon,
   Mic01Icon,
   Notification03Icon,
@@ -12,12 +13,18 @@ import {
   UserIcon,
   VolumeHighIcon,
 } from '@hugeicons/core-free-icons'
-import { Link, createFileRoute } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import type * as React from 'react'
 import type { LoaderStyle } from '@/hooks/use-chat-settings'
 import type { BrailleSpinnerPreset } from '@/components/ui/braille-spinner'
 import type { ThemeId } from '@/lib/theme'
+import type { SettingsNavId } from '@/components/settings/settings-sidebar'
+import {
+  SETTINGS_NAV_ITEMS,
+  SettingsMobilePills,
+  SettingsSidebar,
+} from '@/components/settings/settings-sidebar'
 import { usePageTitle } from '@/hooks/use-page-title'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -36,8 +43,21 @@ import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { ThreeDotsSpinner } from '@/components/ui/three-dots-spinner'
 // useWorkspaceStore removed — hamburger eliminated on mobile
 
+const VALID_SECTION_IDS: ReadonlyArray<SettingsNavId> = SETTINGS_NAV_ITEMS.map(
+  (item) => item.id,
+)
+
 export const Route = createFileRoute('/settings/')({
   ssr: false,
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { section?: SettingsNavId } => {
+    const raw = typeof search.section === 'string' ? search.section : undefined
+    if (raw && (VALID_SECTION_IDS as ReadonlyArray<string>).includes(raw)) {
+      return { section: raw as SettingsNavId }
+    }
+    return {}
+  },
   component: SettingsRoute,
 })
 
@@ -245,36 +265,7 @@ function SettingsRow({ label, description, children }: RowProps) {
   )
 }
 
-type SettingsSectionId =
-  | 'profile'
-  | 'appearance'
-  | 'chat'
-  | 'hermes'
-  | 'agent'
-  | 'routing'
-  | 'voice'
-  | 'display'
-  | 'notifications'
-  | 'advanced'
-
-type SettingsNavItem = {
-  id: SettingsSectionId | 'mcp'
-  label: string
-  to?: '/settings/mcp'
-}
-
-const SETTINGS_NAV_ITEMS: Array<SettingsNavItem> = [
-  { id: 'hermes', label: 'Model & Provider' },
-  { id: 'agent', label: 'Agent Behavior' },
-  { id: 'routing', label: 'Smart Routing' },
-  { id: 'voice', label: 'Voice' },
-  { id: 'display', label: 'Display' },
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'chat', label: 'Chat' },
-  { id: 'notifications', label: 'Notifications' },
-  { id: 'mcp', label: 'MCP Servers', to: '/settings/mcp' },
-  { id: 'language' as SettingsSectionId, label: 'Language' },
-]
+type SettingsSectionId = SettingsNavId
 
 function SettingsRoute() {
   usePageTitle('Settings')
@@ -310,8 +301,8 @@ function SettingsRoute() {
     void fetchModels()
   }, [])
 
-  const [activeSection, setActiveSection] =
-    useState<SettingsSectionId>('hermes')
+  const { section } = Route.useSearch()
+  const activeSection: SettingsSectionId = section ?? 'hermes'
 
   return (
     <div className="min-h-screen bg-surface text-primary-900">
@@ -319,77 +310,15 @@ function SettingsRoute() {
       <div className="pointer-events-none fixed inset-0 bg-gradient-to-br from-primary-100/25 via-transparent to-primary-300/20" />
 
       <main className="relative mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 pt-6 pb-24 sm:px-6 md:flex-row md:gap-6 md:pb-8 lg:pt-8">
-        {/* Sidebar nav */}
-        <nav className="hidden w-48 shrink-0 md:block">
-          <div className="sticky top-8">
-            <h1 className="mb-4 text-lg font-semibold text-primary-900 px-3">
-              Settings
-            </h1>
-            <div className="flex flex-col gap-0.5">
-              {SETTINGS_NAV_ITEMS.map((item) =>
-                item.to ? (
-                  <Link
-                    key={item.id}
-                    to={item.to}
-                    className="rounded-lg px-3 py-2 text-left text-sm text-primary-600 transition-colors hover:bg-primary-100 hover:text-primary-900"
-                  >
-                    {item.label}
-                  </Link>
-                ) : (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() =>
-                      setActiveSection(item.id as SettingsSectionId)
-                    }
-                    className={cn(
-                      'rounded-lg px-3 py-2 text-left text-sm transition-colors',
-                      activeSection === item.id
-                        ? 'bg-accent-500/10 text-accent-600 font-medium'
-                        : 'text-primary-600 hover:bg-primary-100 hover:text-primary-900',
-                    )}
-                  >
-                    {item.label}
-                  </button>
-                ),
-              )}
-            </div>
-          </div>
-        </nav>
+        <SettingsSidebar activeId={activeSection} />
 
-        {/* Mobile header — intentionally omitted; MobilePageHeader above shows "Settings" */}
-
-        {/* Mobile section pills */}
-        <div className="flex gap-1.5 overflow-x-auto pb-2 scrollbar-none md:hidden">
-          {SETTINGS_NAV_ITEMS.map((item) =>
-            item.to ? (
-              <Link
-                key={item.id}
-                to={item.to}
-                className="shrink-0 rounded-full bg-primary-100 px-3 py-1.5 text-xs font-medium text-primary-600 transition-colors"
-              >
-                {item.label}
-              </Link>
-            ) : (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveSection(item.id as SettingsSectionId)}
-                className={cn(
-                  'shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
-                  activeSection === item.id
-                    ? 'bg-accent-500 text-white'
-                    : 'bg-primary-100 text-primary-600',
-                )}
-              >
-                {item.label}
-              </button>
-            ),
-          )}
-        </div>
+        <SettingsMobilePills activeId={activeSection} />
 
         {/* Content area */}
         <div className="flex-1 min-w-0 flex flex-col gap-4">
+          {/* -- Connection ------------------ */}
+          {activeSection === 'connection' && <ConnectionSection />}
+
           {/* ── Hermes Agent ──────────────────────────────────── */}
           {activeSection === 'hermes' && (
             <HermesConfigSection activeView="hermes" />
@@ -415,18 +344,19 @@ function SettingsRoute() {
                 description="Choose a workspace theme and accent color."
                 icon={PaintBoardIcon}
               >
-                <SettingsRow
-                  label="Theme"
-                  description="Choose the workspace palette. Light and dark variants are both available."
-                >
-                  <div className="w-full">
-                    <WorkspaceThemePicker />
+                <div className="space-y-2">
+                  <div>
+                    <p className="text-sm font-medium text-primary-900">
+                      Theme
+                    </p>
+                    <p className="text-xs text-primary-600 text-pretty">
+                      Choose the workspace palette. Light and dark variants are
+                      both available.
+                    </p>
                   </div>
-                </SettingsRow>
-
-                {/* Accent color removed — themes control accent */}
+                  <WorkspaceThemePicker />
+                </div>
               </SettingsSection>
-              {/* LoaderStyleSection removed — not relevant for Hermes */}
             </>
           )}
 
@@ -843,6 +773,74 @@ function ChatDisplaySection() {
               updateChatSettings({ showReasoningBlocks: checked })
             }
             aria-label="Show reasoning blocks"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Sound on response complete"
+          description="Play a short sound in the browser when the agent finishes replying."
+        >
+          <Switch
+            checked={chatSettings.soundOnChatComplete}
+            onCheckedChange={(checked) =>
+              updateChatSettings({ soundOnChatComplete: checked })
+            }
+            aria-label="Sound on response complete"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Enter key behavior"
+          description={
+            chatSettings.enterBehavior === 'newline'
+              ? 'Enter inserts a newline. Use ⌘/Ctrl+Enter to send.'
+              : 'Enter sends the message. Use Shift+Enter for a newline.'
+          }
+        >
+          <Switch
+            checked={chatSettings.enterBehavior === 'newline'}
+            onCheckedChange={(checked) =>
+              updateChatSettings({
+                enterBehavior: checked ? 'newline' : 'send',
+              })
+            }
+            aria-label="Enter inserts newline instead of sending"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Chat content width"
+          description="Controls the max-width of the message column on wide screens."
+        >
+          <select
+            value={chatSettings.chatWidth}
+            onChange={(e) =>
+              updateChatSettings({
+                chatWidth: e.target.value as
+                  | 'comfortable'
+                  | 'wide'
+                  | 'full',
+              })
+            }
+            className="h-8 rounded-md border border-primary-200 bg-primary-50 px-2 text-sm text-primary-900 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-400"
+            aria-label="Chat content width"
+          >
+            <option value="comfortable">Comfortable (900px)</option>
+            <option value="wide">Wide (1200px)</option>
+            <option value="full">Full width</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow
+          label="Expand sidebar on hover"
+          description={
+            chatSettings.sidebarHoverExpand
+              ? 'Collapsed sidebar expands temporarily when you hover over it.'
+              : 'Collapsed sidebar stays at 48px. Click the toggle to open (default).'
+          }
+        >
+          <Switch
+            checked={chatSettings.sidebarHoverExpand}
+            onCheckedChange={(checked) =>
+              updateChatSettings({ sidebarHoverExpand: checked })
+            }
+            aria-label="Expand sidebar on hover"
           />
         </SettingsRow>
       </SettingsSection>
@@ -1874,5 +1872,172 @@ function HermesConfigSection({
       )}
       {sectionContent[activeView]}
     </>
+  )
+}
+
+// ── Connection Section ──────────────────────────────────────────────────
+
+type ConnectionSettings = {
+  gateway: string
+  dashboard: string
+  source: 'override' | 'env' | 'default'
+}
+
+function ConnectionSection() {
+  const [current, setCurrent] = useState<ConnectionSettings | null>(null)
+  const [gatewayInput, setGatewayInput] = useState('')
+  const [dashboardInput, setDashboardInput] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [isError, setIsError] = useState(false)
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch('/api/connection-settings')
+      if (!res.ok) return
+      const data = (await res.json()) as ConnectionSettings
+      setCurrent(data)
+      setGatewayInput(data.gateway)
+      setDashboardInput(data.dashboard)
+    } catch {
+      // non-fatal
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const save = async () => {
+    setSaving(true)
+    setMessage(null)
+    setIsError(false)
+    try {
+      const res = await fetch('/api/connection-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gateway: gatewayInput.trim(),
+          dashboard: dashboardInput.trim(),
+        }),
+      })
+      const data = (await res.json()) as ConnectionSettings & { error?: string }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      setCurrent(data)
+      setMessage('Saved. Connection updated — no restart needed.')
+    } catch (err) {
+      setIsError(true)
+      setMessage(err instanceof Error ? err.message : 'Failed to save')
+    } finally {
+      setSaving(false)
+      setTimeout(() => setMessage(null), 6000)
+    }
+  }
+
+  const reset = async () => {
+    setGatewayInput('')
+    setDashboardInput('')
+    setSaving(true)
+    try {
+      const res = await fetch('/api/connection-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gateway: '', dashboard: '' }),
+      })
+      const data = (await res.json()) as ConnectionSettings
+      setCurrent(data)
+      setGatewayInput(data.gateway)
+      setDashboardInput(data.dashboard)
+      setMessage('Reset to env / default URLs.')
+    } catch {
+      setIsError(true)
+      setMessage('Reset failed')
+    } finally {
+      setSaving(false)
+      setTimeout(() => setMessage(null), 6000)
+    }
+  }
+
+  const inputClass =
+    'h-9 w-full rounded-lg border border-primary-200 bg-primary-50 px-3 text-sm text-primary-900 font-mono outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary-400'
+
+  const sourceLabel: Record<ConnectionSettings['source'], string> = {
+    override: 'Runtime override (saved in workspace-overrides.json)',
+    env: 'From HERMES_API_URL / HERMES_DASHBOARD_URL env vars',
+    default: 'Defaults — no override set',
+  }
+
+  return (
+    <SettingsSection
+      title="Connection"
+      description="Point the workspace at your Project Agent services. Useful for Tailscale, LAN, or remote-server setups (#101)."
+      icon={Link01Icon}
+    >
+      <div className="text-xs text-primary-600">
+        {current ? sourceLabel[current.source] : 'Loading…'}
+      </div>
+
+      <SettingsRow
+        label="Gateway URL"
+        description="Core chat + completions + health. Default http://127.0.0.1:8645."
+      >
+        <input
+          className={inputClass}
+          value={gatewayInput}
+          onChange={(e) => setGatewayInput(e.target.value)}
+          placeholder="http://100.x.y.z:8642"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        label="Dashboard URL"
+        description="Extended APIs — sessions, skills, config, jobs. Default http://127.0.0.1:9119."
+      >
+        <input
+          className={inputClass}
+          value={dashboardInput}
+          onChange={(e) => setDashboardInput(e.target.value)}
+          placeholder="http://100.x.y.z:9119"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+        />
+      </SettingsRow>
+
+      <div className="flex items-center gap-2 pt-2">
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : 'Save & reprobe'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={reset}
+          disabled={saving || current?.source === 'default'}
+        >
+          Reset to defaults
+        </Button>
+        {message ? (
+          <span
+            className={cn(
+              'text-xs',
+              isError ? 'text-red-500' : 'text-emerald-600',
+            )}
+          >
+            {message}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="mt-3 rounded-lg border border-primary-200 bg-primary-100/50 p-3 text-xs text-primary-600">
+        <strong className="font-semibold">Tailscale / remote tip:</strong>{' '}
+        Set the gateway to its Tailscale IP (e.g. <code>http://100.x.y.z:8642</code>)
+        and ensure the gateway listens on <code>0.0.0.0</code> (set{' '}
+        <code>API_SERVER_HOST=0.0.0.0</code> in the agent-side <code>.env</code>).
+        No workspace restart needed — capabilities reprobe on save.
+      </div>
+    </SettingsSection>
   )
 }

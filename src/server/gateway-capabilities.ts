@@ -2,19 +2,137 @@
  * Probes Hermes services to detect which API groups are available.
  *
  * Zero-fork architecture:
- *   - Gateway (:8645 by default): /health, /v1/chat/completions, /v1/models
+ *   - Gateway (:8642 by default): /health, /v1/chat/completions, /v1/models
  *   - Dashboard (:9119 by default): sessions, skills, config, cron, env, analytics
  *
  * Legacy enhanced-fork compatibility remains for users still running the
  * older all-in-one web API on the gateway port.
+ *
+ * Precedence for gateway/dashboard URLs:
+ *   1. Runtime override saved via setGatewayUrl() / setDashboardUrl()
+ *      (persisted to ~/.hermes/workspace-overrides.json) — set from the UI
+ *      so remote / Tailscale users can relocate without a restart (#101).
+ *   2. process.env.HERMES_API_URL / HERMES_DASHBOARD_URL at process start.
+ *   3. Default localhost (8642 / 9119).
  */
 
-export let HERMES_API = process.env.HERMES_API_URL || 'http://127.0.0.1:8645'
-export let HERMES_DASHBOARD_URL =
-  process.env.HERMES_DASHBOARD_URL || 'http://127.0.0.1:9119'
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+
+type WorkspaceOverrides = {
+  hermesApiUrl?: string
+  hermesDashboardUrl?: string
+}
+
+function overridesPath(): string {
+  const home = process.env.HERMES_HOME ?? path.join(os.homedir(), '.hermes')
+  return path.join(home, 'workspace-overrides.json')
+}
+
+function readOverrides(): WorkspaceOverrides {
+  try {
+    const raw = fs.readFileSync(overridesPath(), 'utf-8')
+    const parsed = JSON.parse(raw) as WorkspaceOverrides
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeOverrides(next: WorkspaceOverrides): void {
+  const file = overridesPath()
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(file, JSON.stringify(next, null, 2), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    })
+  } catch {
+    console.warn(`[gateway] failed to persist workspace overrides to ${file}`)
+  }
+}
+
+function normalizeUrl(u: string): string {
+  return u.trim().replace(/\/+$/, '')
+}
+
+const _initialOverrides = readOverrides()
+
+export let HERMES_API = normalizeUrl(
+  _initialOverrides.hermesApiUrl ||
+    process.env.HERMES_API_URL ||
+    'http://127.0.0.1:8642',
+)
+export let HERMES_DASHBOARD_URL = normalizeUrl(
+  _initialOverrides.hermesDashboardUrl ||
+    process.env.HERMES_DASHBOARD_URL ||
+    'http://127.0.0.1:9119',
+)
+
+/**
+ * Update the gateway URL at runtime, persist it, and reset the probe cache
+ * so the next call to ensureGatewayProbed() re-detects capabilities.
+ * Returns the saved URL (normalized). Pass an empty string to clear the
+ * override and fall back to env/default.
+ */
+export function setGatewayUrl(input: string | null | undefined): string {
+  const normalized = input ? normalizeUrl(input) : ''
+  const overrides = readOverrides()
+  if (normalized) {
+    overrides.hermesApiUrl = normalized
+    HERMES_API = normalized
+  } else {
+    delete overrides.hermesApiUrl
+    HERMES_API = normalizeUrl(
+      process.env.HERMES_API_URL || 'http://127.0.0.1:8642',
+    )
+  }
+  writeOverrides(overrides)
+  // Force reprobe on the next capability check.
+  probePromise = null
+  lastProbeAt = 0
+  return HERMES_API
+}
+
+/**
+ * Same as setGatewayUrl() but for the dashboard service.
+ */
+export function setDashboardUrl(input: string | null | undefined): string {
+  const normalized = input ? normalizeUrl(input) : ''
+  const overrides = readOverrides()
+  if (normalized) {
+    overrides.hermesDashboardUrl = normalized
+    HERMES_DASHBOARD_URL = normalized
+  } else {
+    delete overrides.hermesDashboardUrl
+    HERMES_DASHBOARD_URL = normalizeUrl(
+      process.env.HERMES_DASHBOARD_URL || 'http://127.0.0.1:9119',
+    )
+  }
+  writeOverrides(overrides)
+  probePromise = null
+  lastProbeAt = 0
+  return HERMES_DASHBOARD_URL
+}
+
+/** Current resolved URLs (after any runtime override). */
+export function getResolvedUrls(): {
+  gateway: string
+  dashboard: string
+  source: 'override' | 'env' | 'default'
+} {
+  const overrides = readOverrides()
+  const source = overrides.hermesApiUrl
+    ? 'override'
+    : process.env.HERMES_API_URL
+      ? 'env'
+      : 'default'
+  return { gateway: HERMES_API, dashboard: HERMES_DASHBOARD_URL, source }
+}
 
 export const HERMES_UPGRADE_INSTRUCTIONS =
-  'For full features, install upstream Hermes Agent (`pip install hermes-agent`) and run `hermes gateway run` plus `hermes dashboard` in separate terminals.'
+  'For full features, install Hermes from source (`git clone https://github.com/NousResearch/hermes-agent && cd hermes-agent && pip install -e .`), then start the gateway on :8642 (`hermes gateway run`). For the extended APIs (Sessions, Skills, Config, Jobs) also start the dashboard on :9119 (`hermes dashboard`).'
 
 export const SESSIONS_API_UNAVAILABLE_MESSAGE = `Your Hermes backend does not support the sessions API. ${HERMES_UPGRADE_INSTRUCTIONS}`
 
@@ -98,18 +216,63 @@ let dashboardTokenCache = ''
 /** Optional bearer token for authenticated gateway endpoints. */
 export const BEARER_TOKEN = process.env.HERMES_API_TOKEN || ''
 
+/**
+ * Optional explicit bearer token for dashboard API calls.
+ *
+ * Preferred over scraping the dashboard's root HTML for an inline token
+ * (the legacy path, which creates a brittle trust boundary — see #124).
+ * When set, the workspace uses this directly and never parses HTML.
+ *
+ * NOTE: do NOT fall back to HERMES_API_TOKEN here. The gateway and the
+ * upstream Hermes dashboard use independent token schemes — the gateway
+ * accepts a long-lived bearer (HERMES_API_TOKEN), while the dashboard
+ * issues an ephemeral session token at boot (web_server.py:_SESSION_TOKEN).
+ * Treating them as interchangeable wedges the workspace into 401 loops on
+ * /api/sessions, /api/skills, etc. against the official dashboard. If
+ * HERMES_DASHBOARD_TOKEN isn't set, leave this empty and let
+ * fetchDashboardToken() fall through to the HTML-scrape legacy path.
+ */
+const DASHBOARD_BEARER_TOKEN = process.env.HERMES_DASHBOARD_TOKEN || ''
+
 function authHeaders(): Record<string, string> {
   return BEARER_TOKEN ? { Authorization: `Bearer ${BEARER_TOKEN}` } : {}
 }
 
+let loggedHtmlScrapeFallback = false
+
+/**
+ * Resolve a bearer token for dashboard API calls.
+ *
+ * Lookup order:
+ *   1.  HERMES_DASHBOARD_TOKEN / HERMES_API_TOKEN env (preferred)
+ *   2.  Inline token injected into the dashboard's root HTML (legacy
+ *      fallback — logs a deprecation warning; to be removed once all
+ *      supported dashboards expose a first-class token endpoint). See #124.
+ */
 export async function fetchDashboardToken(options?: {
   force?: boolean
 }): Promise<string> {
   const force = options?.force === true
+
+  // Prefer the explicit service-to-service token — no HTML scrape at all.
+  if (DASHBOARD_BEARER_TOKEN) {
+    dashboardTokenCache = DASHBOARD_BEARER_TOKEN
+    return DASHBOARD_BEARER_TOKEN
+  }
+
   if (!force && dashboardTokenCache) return dashboardTokenCache
   if (!force && dashboardTokenPromise) return dashboardTokenPromise
 
   dashboardTokenPromise = (async () => {
+    if (!loggedHtmlScrapeFallback) {
+      loggedHtmlScrapeFallback = true
+      console.warn(
+        '[gateway] HERMES_DASHBOARD_TOKEN is not set — falling back to the legacy ' +
+          'HTML-scrape token flow. This fallback will be removed in a future release. ' +
+          'Set HERMES_DASHBOARD_TOKEN (or HERMES_API_TOKEN) to a dashboard bearer ' +
+          'token to migrate. See #124.',
+      )
+    }
     // Dashboard injects the session token inline on `/` (root), not on
     // `/index.html` which serves the raw Vite-built HTML without the token.
     const res = await fetch(`${HERMES_DASHBOARD_URL}/`, {
@@ -299,9 +462,9 @@ async function autoDetectGatewayUrl(): Promise<void> {
   if (process.env.HERMES_API_URL) return
 
   const candidates = [
-    'http://127.0.0.1:8645',
     'http://127.0.0.1:8642',
     'http://127.0.0.1:8643',
+    'http://127.0.0.1:8645',
   ]
 
   for (const candidate of candidates) {
@@ -319,7 +482,12 @@ async function autoDetectGatewayUrl(): Promise<void> {
     }
   }
 
-  console.warn('[gateway] Could not reach Hermes gateway on 8645, 8642, or 8643')
+  console.warn(
+    '[gateway] Could not reach Hermes gateway on 8645, 8642, or 8643. ' +
+      'If you run the workspace on a different machine (Tailscale / VPN / LAN), ' +
+      'set HERMES_API_URL=http://<reachable-host>:8642 in .env and restart. ' +
+      'Also set API_SERVER_HOST=0.0.0.0 on the gateway so remote peers can connect.',
+  )
 }
 
 async function autoDetectDashboardUrl(): Promise<void> {
