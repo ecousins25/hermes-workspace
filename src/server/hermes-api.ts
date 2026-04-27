@@ -169,11 +169,36 @@ export async function updateSession(
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
+  // Always remove local cache state (no-op if not present).
+  // Some sessions are local-only (UUID ids) even when the dashboard is available.
+  try {
+    const { deleteLocalSession } = await import('./local-session-store')
+    deleteLocalSession(sessionId)
+  } catch {
+    // ignore
+  }
+
   if (getCapabilities().dashboard.available) {
-    await deleteDashboardSession(sessionId)
+    // When the dashboard is available, it's the canonical sessions API.
+    // Some ids may still not exist server-side (local-only), so treat 404
+    // as success after local cache deletion above.
+    try {
+      await deleteDashboardSession(sessionId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes(' 404 ')) return
+      throw err
+    }
     return
   }
-  return hermesDeleteReq(`/api/sessions/${sessionId}`)
+
+  try {
+    return await hermesDeleteReq(`/api/sessions/${sessionId}`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes(' 404 ')) return
+    throw err
+  }
 }
 
 export async function getMessages(

@@ -15,6 +15,7 @@ import {
 } from '../../server/hermes-api'
 import { createCapabilityUnavailablePayload } from '@/lib/feature-gates'
 import { listLocalSessions } from '../../server/local-session-store'
+import { deleteSessionViaCli, renameSessionViaCli } from '../../server/hermes-sessions-cli'
 
 export const Route = createFileRoute('/api/sessions')({
   server: {
@@ -25,12 +26,29 @@ export const Route = createFileRoute('/api/sessions')({
           return json({ ok: false, error: 'Unauthorized' }, { status: 401 })
         }
         const capabilities = await ensureGatewayProbed()
+        // Always include local portable sessions (Ollama, Atomic Chat, etc.) so
+        // the UI doesn't "collapse" when Hermes sessions are temporarily unavailable.
+        const localSessions = listLocalSessions()
+
         if (!capabilities.sessions) {
+          const localOnly = localSessions.map((ls) => ({
+            key: ls.id,
+            id: ls.id,
+            title: ls.title || 'Local Chat',
+            startedAt: ls.createdAt,
+            updatedAt: ls.updatedAt,
+            message_count: ls.messageCount,
+            model: ls.model,
+            source: 'local',
+          }))
           return json({
             ok: true,
-            sessions: [],
-            source: 'unavailable',
-            message: SESSIONS_API_UNAVAILABLE_MESSAGE,
+            sessions: localOnly,
+            source: localOnly.length > 0 ? 'local' : 'unavailable',
+            message:
+              localOnly.length > 0
+                ? 'Showing local sessions only (Hermes sessions API unavailable).'
+                : SESSIONS_API_UNAVAILABLE_MESSAGE,
           })
         }
 
@@ -38,8 +56,7 @@ export const Route = createFileRoute('/api/sessions')({
           const sessions = await listSessions(50, 0)
           const gatewaySessions = sessions.map(toSessionSummary)
 
-          // Merge local portable sessions (Ollama, Atomic Chat, etc.)
-          const localSessions = listLocalSessions()
+          // Merge local sessions with gateway/dashboard sessions.
           const gatewayIds = new Set(gatewaySessions.map((s: any) => s.key || s.id))
           for (const ls of localSessions) {
             if (!gatewayIds.has(ls.id)) {
@@ -58,12 +75,26 @@ export const Route = createFileRoute('/api/sessions')({
 
           return json({ sessions: gatewaySessions })
         } catch (err) {
-          return json(
-            {
-              error: err instanceof Error ? err.message : String(err),
-            },
-            { status: 500 },
-          )
+          // If Hermes list fails transiently, fall back to local sessions rather
+          // than returning 500 (which makes the UI appear to "lose" sessions).
+          const localOnly = localSessions.map((ls) => ({
+            key: ls.id,
+            id: ls.id,
+            title: ls.title || 'Local Chat',
+            startedAt: ls.createdAt,
+            updatedAt: ls.updatedAt,
+            message_count: ls.messageCount,
+            model: ls.model,
+            source: 'local',
+          }))
+          return json({
+            ok: true,
+            sessions: localOnly,
+            source: 'local-fallback',
+            message: `Hermes sessions list failed; showing local sessions only. ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          })
         }
       },
       POST: async ({ request }) => {
@@ -194,6 +225,12 @@ export const Route = createFileRoute('/api/sessions')({
           }
 
           if (capabilities.dashboard.available && !capabilities.enhancedChat) {
+            // In this mode, the dashboard is reachable but the gateway doesn't
+            // expose a sessions PATCH endpoint. Use the Hermes CLI as the
+            // authoritative session manager (writes to the same SQLite DB).
+            if (label) {
+              await renameSessionViaCli(sessionKey, label)
+            }
             return json({
               ok: true,
               sessionKey,
@@ -205,13 +242,29 @@ export const Route = createFileRoute('/api/sessions')({
                 derivedTitle: label || sessionKey,
                 updatedAt: Date.now(),
               },
-              updated: false,
+              updated: true,
             })
           }
 
-          const session = await updateSession(sessionKey, {
-            title: label,
-          })
+          let session
+          try {
+            session = await updateSession(sessionKey, {
+              title: label,
+            })
+          } catch (err) {
+            // Hermes may not expose a session PATCH endpoint over HTTP.
+            // Fallback to the local Hermes CLI (same user, same machine).
+            const titleToSet = label ?? ''
+            await renameSessionViaCli(sessionKey, titleToSet)
+            session = await updateSession(sessionKey, {
+              title: label,
+            }).catch(() => ({
+              id: sessionKey,
+              title: label ?? null,
+              model: null,
+              started_at: Date.now(),
+            }))
+          }
 
           return json({
             ok: true,
@@ -259,7 +312,15 @@ export const Route = createFileRoute('/api/sessions')({
             )
           }
 
-          await deleteSession(sessionKey)
+          // Prefer HTTP delete when supported; fallback to CLI which matches
+          // the CLI behavior (resolve + delete) for all session id shapes.
+          // Note: in some deployments (like lane-a), the gateway port doesn't
+          // expose /api/sessions at all, so HTTP delete may not exist.
+          try {
+            await deleteSession(sessionKey)
+          } catch {
+            await deleteSessionViaCli(sessionKey)
+          }
 
           return json({ ok: true, sessionKey })
         } catch (err) {

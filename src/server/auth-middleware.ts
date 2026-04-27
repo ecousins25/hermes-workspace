@@ -121,11 +121,15 @@ export function isAuthenticated(request: Request): boolean {
 }
 
 export function requireLocalOrAuth(request: Request): boolean {
+  // If password protection is disabled, only allow local requests.
   if (!isPasswordProtectionEnabled()) {
     return isLocalRequest(request)
   }
 
-  return isAuthenticated(request)
+  // If password protection is enabled, allow either:
+  // - local requests (health probes / server-side fetches on the same host)
+  // - authenticated sessions (browser users)
+  return isLocalRequest(request) || isAuthenticated(request)
 }
 
 /**

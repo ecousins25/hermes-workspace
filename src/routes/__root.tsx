@@ -300,7 +300,11 @@ function RootLayout() {
   return (
     <QueryClientProvider client={queryClient}>
       <Toaster />
-      {rootSurfaceState.showOnboarding ? <HermesOnboarding /> : null}
+      {rootSurfaceState.showOnboarding ? (
+        <WorkspaceShell>
+          <HermesOnboarding />
+        </WorkspaceShell>
+      ) : null}
       {rootSurfaceState.showWorkspaceShell ? (
         <>
           <GlobalShortcutListener />

@@ -3,17 +3,63 @@ type Tombstone = {
   expiresAt: number
 }
 
-const TOMBSTONE_TTL_MS = 8000
+// "Delete session" isn't always supported by the upstream Hermes API (some
+// gateway session backends have no DELETE endpoint). In those cases we treat
+// delete as "hide" and persist it client-side.
+const TOMBSTONE_TTL_MS = 365 * 24 * 60 * 60 * 1000 // 1 year
+const STORAGE_KEY = 'hermes_session_tombstones_v1'
 const tombstones = new Map<string, Tombstone>()
+
+function canUseLocalStorage() {
+  return (
+    typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+  )
+}
+
+function loadFromStorage() {
+  if (!canUseLocalStorage()) return
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as Array<Tombstone>
+    if (!Array.isArray(parsed)) return
+    const now = Date.now()
+    for (const t of parsed) {
+      if (!t?.id || typeof t.id !== 'string') continue
+      if (typeof t.expiresAt !== 'number') continue
+      if (t.expiresAt <= now) continue
+      tombstones.set(t.id, { id: t.id, expiresAt: t.expiresAt })
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function saveToStorage() {
+  if (!canUseLocalStorage()) return
+  try {
+    const now = Date.now()
+    const values = Array.from(tombstones.values()).filter(
+      (t) => t.expiresAt > now,
+    )
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(values))
+  } catch {
+    // ignore
+  }
+}
+
+loadFromStorage()
 
 export function markSessionDeleted(id: string) {
   if (!id) return
   tombstones.set(id, { id, expiresAt: Date.now() + TOMBSTONE_TTL_MS })
+  saveToStorage()
 }
 
 export function clearSessionDeleted(id: string) {
   if (!id) return
   tombstones.delete(id)
+  saveToStorage()
 }
 
 export function filterSessionsWithTombstones<
